@@ -1,0 +1,435 @@
+import sys
+import os
+import numpy as np
+import soundfile as sf
+import matplotlib.pyplot as plt
+from scipy.stats import chi2
+import pandas as pd
+import warnings
+warnings.filterwarnings("ignore")
+
+
+AUDIO_FOLDER = "audio"
+OUT_DIR = "analysis"
+LOG_FILE = "log.txt"
+
+P_VALUE_THRESHOLD = 0.01       
+CORRELATION_THRESHOLD = 0.49   # > 0.49
+THETA_THRESHOLD = 0.46         #  θ > 0.46
+EMBED_RATIO = 0.1              # 10% 
+
+os.makedirs(OUT_DIR, exist_ok=True)
+
+TEXT = """
+Стеганография – наука о методах сокрытия информации, позволяющих передавать и хранить информацию с учетом сохранения в тайне факта хранения или передачи информации. Цифровая стеганография – направление стеганографии, основанное на сокрытии или внедрении дополнительной информации в цифровые объекты. Современные методы стеганографии используют различные алгоритмы для встраивания данных в носитель. 
+Распространенные техники включают в себя изменение наименьших значимых бит данных, модификацию параметров аудио- и видеофайлов, внедрение данных в текстовые документы с помощью изменения форматирования или пробелов.
+Развитие современных технологий предоставило новые возможности для внедрения стеганографических методов в различные цифровые форматы. Наиболее популярными являются изображения, однако аудиофайлы также хорошо подходят 
+для сокрытия информации благодаря сложной структуре и возможности внедрить незаметные изменения и скрыть дополнительную информацию, которая будет незаметна для человеческого уха.
+Стеганографические методы в аудиофайлах основываются на принципе минимального воздействия на человеческое восприятие звука и используются для защиты авторских прав, передачи и хранения секретных данных, скрытой аутентификации. 
+Такой подход способствует сокрытию информации в широком диапазоне аудиофайлов, включая музыкальные треки. Для применения этих методов необходимо учесть их возможности, ограничения и устойчивость к анализу. 
+Сокрытие информации также может предполагать многоуровневый подход. Комбинирование стеганографии с криптографией значительно повышает степень безопасности передаваемых данных, скрывая как сам факт передачи, 
+так и содержание информации внутри файла.
+Технологии скрытия информации в файлах находят своё применение в области обеспечения безопасности и защиты данных, однако их потенциал также может быть использован для создания вредоносных программ и передачи нежелательной информации. 
+При этом стеганография не обеспечивает абсолютно надежную защиту информации, так как существуют аналитические и статистические методы, позволяющие обнаружить и извлечь скрытые данные. 
+Анализ аудиосигналов в контексте обнаружения наличия и выявления скрытой информации представляет собой актуальную область исследований, направленную на совершенствование методов стегоанализа 
+для противодействия несанкционированному сокрытию данных в мультимедийных потоках и распространению вредоносных программ. 
+Методы стегоанализа аудио включают в себя частотный анализ сигнала, исследование фазовых и спектральных параметров, оценку шумов и аномалий, применение алгоритмов машинного обучения для распознавания скрытых закономерностей. 
+
+"""
+log_file = open(LOG_FILE, 'w', encoding='utf-8')
+sys.stdout = log_file
+
+
+def text_to_bits(text, encoding='utf-8'):
+    byte_array = text.encode(encoding)
+    bits = []
+    for byte in byte_array:
+        for i in range(7, -1, -1):
+            bits.append((byte >> i) & 1)
+    return np.array(bits, dtype=np.uint8)
+
+BASE_TEXT_BITS = text_to_bits(TEXT)
+
+def generate_text_bits(target_length):
+    if len(BASE_TEXT_BITS) == 0:
+        return np.zeros(target_length, dtype=np.uint8)
+    
+    if target_length <= len(BASE_TEXT_BITS):
+        return BASE_TEXT_BITS[:target_length]
+    
+    repetitions = target_length // len(BASE_TEXT_BITS) + 1
+    return np.tile(BASE_TEXT_BITS, repetitions)[:target_length]
+
+def generate_random_bits(target_length):
+    return np.random.randint(0, 2, target_length, dtype=np.uint8)
+
+def embed_bits(signal, embed_type="text"):
+    n_samples = int(len(signal) * EMBED_RATIO)
+    
+    if embed_type == "text":
+        bits = generate_text_bits(n_samples)
+    elif embed_type == "random":
+        bits = generate_random_bits(n_samples)
+    else:
+        raise ValueError(f"Неизвестный тип: {embed_type}")
+    
+    stego = signal.copy()
+    modified_count = 0
+    for i in range(n_samples):
+        original_lsb = signal[i] & 1
+        new_lsb = bits[i]
+        if original_lsb != new_lsb:
+            stego[i] = (signal[i] & ~1) | new_lsb
+            modified_count += 1
+    
+    return stego, n_samples, modified_count
+
+def calculate_p_value(signal):
+    lsb = signal & 1
+    
+    if len(np.unique(lsb)) < 2:
+        return 1.0
+    
+    obs = np.bincount(lsb, minlength=2)
+    n = len(lsb)
+    exp = np.array([n/2, n/2])
+    
+    chi_sq = np.sum((obs - exp) ** 2 / (exp + 1e-12))
+    return 1 - chi2.cdf(chi_sq, 1)
+
+def calculate_correlation(signal):
+    lsb = signal & 1
+    
+    if len(lsb) < 2:
+        return 0.0
+    
+    x = lsb[:-1]
+    y = lsb[1:]
+    
+    mean_x = np.mean(x)
+    mean_y = np.mean(y)
+    
+    covariance = np.sum((x - mean_x) * (y - mean_y))
+    std_x = np.sqrt(np.sum((x - mean_x) ** 2))
+    std_y = np.sqrt(np.sum((y - mean_y) ** 2))
+    
+    if std_x * std_y == 0:
+        return 0.0
+    
+    return covariance / (std_x * std_y)
+
+def calculate_theta(signal):
+    lsb = signal & 1
+    
+    if len(lsb) < 2:
+        return 0.0
+    
+    m = np.zeros((2, 2), dtype=int)
+    for i in range(len(lsb) - 1):
+        m[lsb[i], lsb[i + 1]] += 1
+    
+    theta = abs((m[0, 0] - m[1, 1]) / 2 - (m[0, 1] - m[1, 0]) / 2)
+    total = np.sum(m)
+    
+    return theta / total if total > 0 else 0.0
+
+def analyze_all_files(folder):
+    np.random.seed(42)
+    data = {
+        'filename': [],
+        'type': [],  # 'clean', 'text_stego', 'random_stego'
+        'p_value': [],
+        'correlation': [],
+        'theta': [],
+        'samples': [],
+        'modified_bits': [],
+        'embed_bits': []
+    }
+    files = sorted(f for f in os.listdir(folder) if f.lower().endswith(".wav"))
+    embed_data_stats = {
+        'min_samples': float('inf'),
+        'max_samples': 0,
+        'total_samples': 0,
+        'min_bits': float('inf'),
+        'max_bits': 0,
+        'total_bits': 0
+    }
+    
+    for i, f in enumerate(files, 1):
+        try:
+            filepath = os.path.join(folder, f)
+            x, sr = sf.read(filepath, dtype="int16", always_2d=False)
+            
+            if x.ndim > 1:
+                x = x.flatten()
+            
+            if len(x) < 100:
+                continue
+            
+            embed_bits_count = int(len(x) * EMBED_RATIO)
+            embed_data_stats['min_samples'] = min(embed_data_stats['min_samples'], len(x))
+            embed_data_stats['max_samples'] = max(embed_data_stats['max_samples'], len(x))
+            embed_data_stats['total_samples'] += len(x)
+            embed_data_stats['min_bits'] = min(embed_data_stats['min_bits'], embed_bits_count)
+            embed_data_stats['max_bits'] = max(embed_data_stats['max_bits'], embed_bits_count)
+            embed_data_stats['total_bits'] += embed_bits_count
+            
+            clean_p = calculate_p_value(x)
+            clean_corr = calculate_correlation(x)
+            clean_theta = calculate_theta(x)
+            
+            data['filename'].append(f)
+            data['type'].append('clean')
+            data['p_value'].append(clean_p)
+            data['correlation'].append(clean_corr)
+            data['theta'].append(clean_theta)
+            data['samples'].append(len(x))
+            data['modified_bits'].append(0)
+            data['embed_bits'].append(0)
+            
+            y_text, embed_text, modified_text = embed_bits(x, "text")
+            text_p = calculate_p_value(y_text)
+            text_corr = calculate_correlation(y_text)
+            text_theta = calculate_theta(y_text)
+            
+            data['filename'].append(f)
+            data['type'].append('text_stego')
+            data['p_value'].append(text_p)
+            data['correlation'].append(text_corr)
+            data['theta'].append(text_theta)
+            data['samples'].append(len(x))
+            data['modified_bits'].append(modified_text)
+            data['embed_bits'].append(embed_text) 
+            
+            y_random, embed_random, modified_random = embed_bits(x, "random")
+            random_p = calculate_p_value(y_random)
+            random_corr = calculate_correlation(y_random)
+            random_theta = calculate_theta(y_random)
+            
+            data['filename'].append(f)
+            data['type'].append('random_stego')
+            data['p_value'].append(random_p)
+            data['correlation'].append(random_corr)
+            data['theta'].append(random_theta)
+            data['samples'].append(len(x))
+            data['modified_bits'].append(modified_random)
+            data['embed_bits'].append(embed_random)
+            
+            if i % 10 == 0:
+                print(f"  Обработано: {i}/{len(files)} файлов")
+                
+        except Exception as e:
+            print(f"  Ошибка в файле {f}: {e}")
+            continue
+    
+    df = pd.DataFrame(data)
+    n_files = len(files)
+    n_records = len(df)
+    
+    print(f"\n  Всего файлов: {n_files}")
+    print(f"    Минимальная длина файла (сэмплов): {embed_data_stats['min_samples']}")
+    print(f"    Максимальная длина файла (сэмплов): {embed_data_stats['max_samples']}")
+    print(f"    Средняя длина файла (сэмплов): {embed_data_stats['total_samples']/n_files:.0f}")
+    print(f"    Минимальный объем встроенных данных (бит): {embed_data_stats['min_bits']}")
+    print(f"    Максимальный объем встроенных данных (бит): {embed_data_stats['max_bits']}")
+    print(f"    Средний объем встроенных данных (бит): {embed_data_stats['total_bits']/n_files:.0f}")
+    
+    min_bytes = embed_data_stats['min_bits'] // 8
+    max_bytes = embed_data_stats['max_bits'] // 8
+    avg_bytes = (embed_data_stats['total_bits'] / n_files) // 8
+    
+    print(f"    Минимальный объем: {min_bytes:,} байт")
+    print(f"    Максимальный объем: {max_bytes:,} байт")
+    print(f"    Средний объем: {avg_bytes:,.0f} байт")
+    print(f"    Длина текста в символах: {len(TEXT)}")
+    print(f"    Длина текста в битах: {len(BASE_TEXT_BITS)}")
+    print(f"    Длина текста в байтах: {len(BASE_TEXT_BITS) // 8}")
+    
+    return df, embed_data_stats
+
+
+def p_value_histograms(df, out_dir):
+    hist_dir = os.path.join(out_dir, "p_value_histograms")
+    os.makedirs(hist_dir, exist_ok = True)
+    
+    clean_data = df[df['type'] == 'clean']
+    text_data = df[df['type'] == 'text_stego']
+    random_data = df[df['type'] == 'random_stego']
+    all_stego_data = pd.concat([text_data, random_data])
+    clean_p = clean_data['p_value'].values
+    text_p = text_data['p_value'].values
+    all_stego_p = all_stego_data['p_value'].values
+    
+    clean_below = np.sum(clean_p < P_VALUE_THRESHOLD)
+    text_below = np.sum(text_p < P_VALUE_THRESHOLD)
+    all_stego_below = np.sum(all_stego_p < P_VALUE_THRESHOLD)
+    
+    all_p_values = np.concatenate([clean_p, all_stego_p])
+    max_p = max(np.max(all_p_values), 1.0)
+    
+    plt.figure(figsize = (12, 8))
+    bins = np.linspace(0, max_p, 30)
+    
+    plt.hist(clean_p, bins = bins, alpha = 0.6, color = 'lightblue', edgecolor = 'darkblue', linewidth = 1.5, label = f'Чистые (n = {len(clean_p)})')
+    plt.hist(all_stego_p, bins = bins, alpha = 0.6, color = 'lightcoral', edgecolor = 'darkred', linewidth = 1.5, label = f'Стего (n = {len(all_stego_p)})')
+    plt.title(f'Гистограмма p-value: Стего vs Чистые\n' f'Диапазон: [0, {max_p:.3f}]', fontsize = 14, fontweight = 'bold')
+    plt.xlabel('p-value')
+    plt.ylabel('Количество файлов')
+    plt.legend(loc = 'upper right', fontsize = 12)
+    plt.grid(alpha = 0.2, linestyle = '--')
+    plt.tight_layout()
+    plt.savefig(os.path.join(hist_dir, "p_value_all.png"), dpi = 300)
+    plt.close()
+    plt.figure(figsize = (12, 8))
+    
+    plt.hist(clean_p, bins = bins, alpha = 0.6, color = 'lightblue', edgecolor = 'darkblue', linewidth = 1.5, label = f'Чистые (n = {len(clean_p)})')
+    plt.hist(text_p, bins = bins, alpha = 0.6, color = 'orange', edgecolor = 'darkorange', linewidth = 1.5, label = f'Встраивание текста (n = {len(text_p)})')
+    plt.title(f'Гистограмма p-value: Встраивание текста vs Чистые\n' f'Диапазон: [0, {max_p:.3f}]', fontsize  =  14, fontweight = 'bold')
+    plt.xlabel('p-value')
+    plt.ylabel('Количество файлов')
+    plt.legend(loc = 'upper right', fontsize = 12)
+    plt.grid(alpha = 0.2, linestyle = '--')
+        
+    plt.tight_layout()
+    plt.savefig(os.path.join(hist_dir, "p_value_text.png"), dpi = 300)
+    plt.close()
+    return {
+        'clean_below': clean_below,
+        'text_below': text_below,
+        'all_stego_below': all_stego_below,
+        'clean_total': len(clean_p),
+        'text_total': len(text_p),
+        'all_stego_total': len(all_stego_p)
+    }
+
+
+def plot_features_histograms(df, out_dir):
+    features_dir = os.path.join(out_dir, "linear_other_features_histograms")
+    os.makedirs(features_dir, exist_ok = True)
+
+    clean_data = df[df['type'] == 'clean']
+    stego_data = df[df['type'].isin(['text_stego', 'random_stego'])]
+    clean_filtered = clean_data[clean_data['p_value'] < P_VALUE_THRESHOLD]
+    stego_filtered = stego_data[stego_data['p_value'] < P_VALUE_THRESHOLD]
+    
+    plt.figure(figsize = (12, 8))
+    
+    if len(clean_data) > 0 and len(stego_data) > 0:
+        clean_corr = clean_data['correlation'].values
+        stego_corr = stego_data['correlation'].values
+        
+        clean_corr_above = np.sum(clean_corr > CORRELATION_THRESHOLD)
+        stego_corr_above = np.sum(stego_corr > CORRELATION_THRESHOLD)
+        
+        all_corr = np.concatenate([clean_corr, stego_corr])
+        min_val = np.min(all_corr)
+        max_val = np.max(all_corr)
+        bins = np.linspace(min_val, max_val, 25)
+        
+        plt.hist(clean_corr, bins = bins, alpha = 0.6, color = 'lightblue', edgecolor = 'darkblue', linewidth = 1.5, label = f'Чистые (n = {len(clean_data)})')
+        plt.hist(stego_corr, bins = bins, alpha = 0.6, color = 'lightcoral', edgecolor = 'darkred', linewidth = 1.5, label = f'Стего (n = {len(stego_data)})')
+        plt.title(f'Гистограмма корреляции: Стего vs Чистые\n' f'Диапазон: [{min_val:.3f}, {max_val:.3f}]', fontsize = 14, fontweight ='bold')
+        plt.xlabel('Коэффициент корреляции')
+        plt.ylabel('Количество файлов')
+        plt.legend(loc ='upper right', fontsize = 12)
+        plt.grid(alpha = 0.2, linestyle = '--')
+        
+    plt.tight_layout()
+    plt.savefig(os.path.join(features_dir, "correlation_all.png"), dpi =300)
+    plt.close()
+    
+    plt.figure(figsize = (12, 8))
+    
+    if len(clean_filtered) > 0 and len(stego_filtered) > 0:
+        clean_corr_filtered = clean_filtered['correlation'].values
+        stego_corr_filtered = stego_filtered['correlation'].values
+        clean_corr_above_filtered = np.sum(clean_corr_filtered > CORRELATION_THRESHOLD)
+        stego_corr_above_filtered = np.sum(stego_corr_filtered > CORRELATION_THRESHOLD)
+    
+        all_corr_filtered = np.concatenate([clean_corr_filtered, stego_corr_filtered])
+        min_val = np.min(all_corr_filtered)
+        max_val = np.max(all_corr_filtered)
+        bins = np.linspace(min_val, max_val, 25)
+        
+        plt.hist(clean_corr_filtered, bins = bins, alpha = 0.6, color = 'lightblue', edgecolor = 'darkblue', linewidth = 1.5, label = f'Чистые с p<{P_VALUE_THRESHOLD} (n = {len(clean_filtered)})')
+        plt.hist(stego_corr_filtered, bins = bins, alpha = 0.6, color = 'lightcoral', edgecolor = 'darkred', linewidth = 1.5, label = f'Стего с p<{P_VALUE_THRESHOLD} (n = {len(stego_filtered)})')
+        plt.title(f'Гистограмма корреляции: Стего vs Чистые\n' f'Только файлы с p-value < {P_VALUE_THRESHOLD}\n' f'Диапазон: [{min_val:.3f}, {max_val:.3f}]', fontsize = 14, fontweight = 'bold')
+        plt.xlabel('Коэффициент корреляции')
+        plt.ylabel('Количество файлов')
+        plt.legend(loc = 'upper right', fontsize = 12)
+        plt.grid(alpha = 0.2, linestyle = '--')     
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(features_dir, f"correlation_all_{P_VALUE_THRESHOLD}.png"), dpi=300)
+    plt.close()
+    plt.figure(figsize = (12, 8))
+    
+    if len(clean_data) > 0 and len(stego_data) > 0:
+        clean_theta = clean_data['theta'].values
+        stego_theta = stego_data['theta'].values
+        
+        clean_theta_above = np.sum(clean_theta > THETA_THRESHOLD)
+        stego_theta_above = np.sum(stego_theta > THETA_THRESHOLD)
+        
+        all_theta = np.concatenate([clean_theta, stego_theta])
+        min_val = np.min(all_theta)
+        max_val = np.max(all_theta)
+        bins = np.linspace(min_val, max_val, 25)
+        
+        plt.hist(clean_theta, bins = bins, alpha = 0.6, color = 'lightblue', edgecolor = 'darkblue', linewidth = 1.5, label = f'Чистые (n = {len(clean_data)})')
+        plt.hist(stego_theta, bins = bins, alpha = 0.6, color = 'lightgreen', edgecolor = 'darkgreen', linewidth = 1.5, label = f'Стего (n = {len(stego_data)})')
+        plt.title(f'Гистограмма метода θ: Стего vs Чистые\n' f'Диапазон: [{min_val:.3f}, {max_val:.3f}]', fontsize = 14, fontweight = 'bold')
+        plt.xlabel('Метрика θ')
+        plt.ylabel('Количество файлов')
+        plt.legend(loc = 'upper right', fontsize = 12)
+        plt.grid(alpha = 0.2, linestyle = '--')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(features_dir, "theta_all.png"), dpi = 300)
+    plt.close()
+    plt.figure(figsize=(12, 8))
+    
+    if len(clean_filtered) > 0 and len(stego_filtered) > 0:
+        clean_theta_filtered = clean_filtered['theta'].values
+        stego_theta_filtered = stego_filtered['theta'].values
+        
+        clean_theta_above_filtered = np.sum(clean_theta_filtered > THETA_THRESHOLD)
+        stego_theta_above_filtered = np.sum(stego_theta_filtered > THETA_THRESHOLD)
+        
+        all_theta_filtered = np.concatenate([clean_theta_filtered, stego_theta_filtered])
+        min_val = np.min(all_theta_filtered)
+        max_val = np.max(all_theta_filtered)
+        bins = np.linspace(min_val, max_val, 25)
+        
+        plt.hist(clean_theta_filtered, bins = bins, alpha = 0.6, color = 'lightblue', edgecolor = 'darkblue', linewidth = 1.5, label = f'Чистые с p<{P_VALUE_THRESHOLD} (n = {len(clean_filtered)})')
+        plt.hist(stego_theta_filtered, bins = bins, alpha = 0.6, color = 'lightgreen', edgecolor = 'darkgreen', linewidth = 1.5, label = f'Стего с p<{P_VALUE_THRESHOLD} (n = {len(stego_filtered)})')
+        plt.title(f'Гистограмма метода θ: Стего vs Чистые\n' f'Только файлы с p-value < {P_VALUE_THRESHOLD}\n' f'Диапазон: [{min_val:.3f}, {max_val:.3f}]', fontsize = 14, fontweight = 'bold')
+        plt.xlabel('Метрика θ')
+        plt.ylabel('Количество файлов')
+        plt.legend(loc = 'upper right', fontsize = 12)
+        plt.grid(alpha = 0.2, linestyle = '--')
+          
+    plt.tight_layout()
+    plt.savefig(os.path.join(features_dir, f"theta_{P_VALUE_THRESHOLD}.png"), dpi=300)
+    plt.close()
+
+if __name__ == "__main__":
+    df, embed_stats = analyze_all_files(AUDIO_FOLDER)
+    p_value_stats = p_value_histograms(df, OUT_DIR)
+    plot_features_histograms(df, OUT_DIR)
+    log_file.close()
+    sys.stdout = sys.__stdout__
+    n_files = len(df) // 3 
+    
+    print(f"Всего файлов: {n_files}")
+    print(f"p-value порог: p < {P_VALUE_THRESHOLD}")
+    print(f"Корреляция порог: > {CORRELATION_THRESHOLD}")
+    print(f"Метод θ порог: > {THETA_THRESHOLD}")
+    print(f"Чистые файлы с p < {P_VALUE_THRESHOLD}: {p_value_stats['clean_below']}/{p_value_stats['clean_total']} ({p_value_stats['clean_below']/p_value_stats['clean_total']*100:.1f}%)")
+    print(f"Встраивание текста с p < {P_VALUE_THRESHOLD}: {p_value_stats['text_below']}/{p_value_stats['text_total']} ({p_value_stats['text_below']/p_value_stats['text_total']*100:.1f}%)")
+    print(f"Стего с p < {P_VALUE_THRESHOLD}: {p_value_stats['all_stego_below']}/{p_value_stats['all_stego_total']} ({p_value_stats['all_stego_below']/p_value_stats['all_stego_total']*100:.1f}%)")
+    
+
+    print(f"p-value: [{df['p_value'].min():.6f}, {df['p_value'].max():.6f}]")
+    print(f"Корреляция: [{df['correlation'].min():.6f}, {df['correlation'].max():.6f}]")
+    print(f"Метод θ: [{df['theta'].min():.6f}, {df['theta'].max():.6f}]")
