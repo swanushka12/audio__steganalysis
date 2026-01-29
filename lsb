@@ -226,13 +226,12 @@ def analyze_all_files(folder):
     n_files = len(files)
     n_records = len(df)
     
-    print(f"\n  Всего файлов: {n_files}")
-    print(f"    Минимальная длина файла (сэмплов): {embed_data_stats['min_samples']}")
-    print(f"    Максимальная длина файла (сэмплов): {embed_data_stats['max_samples']}")
-    print(f"    Средняя длина файла (сэмплов): {embed_data_stats['total_samples']/n_files:.0f}")
-    print(f"    Минимальный объем встроенных данных (бит): {embed_data_stats['min_bits']}")
-    print(f"    Максимальный объем встроенных данных (бит): {embed_data_stats['max_bits']}")
-    print(f"    Средний объем встроенных данных (бит): {embed_data_stats['total_bits']/n_files:.0f}")
+    print(f"Минимальная длина файла (сэмплов): {embed_data_stats['min_samples']}")
+    print(f"Максимальная длина файла (сэмплов): {embed_data_stats['max_samples']}")
+    print(f"Средняя длина файла (сэмплов): {embed_data_stats['total_samples']/n_files:.0f}")
+    print(f"Минимальный объем встроенных данных (бит): {embed_data_stats['min_bits']}")
+    print(f"Максимальный объем встроенных данных (бит): {embed_data_stats['max_bits']}")
+    print(f"Средний объем встроенных данных (бит): {embed_data_stats['total_bits']/n_files:.0f}")
     
     min_bytes = embed_data_stats['min_bits'] // 8
     max_bytes = embed_data_stats['max_bits'] // 8
