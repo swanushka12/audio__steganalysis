@@ -5,7 +5,7 @@ import random
 import librosa
 
 class DSSSCoding:
-    def __init__(self, frame_size = 4096, alpha = 1.0):  
+    def __init__(self, frame_size = 4096, alpha = 0.5):  
         self.frame_size = frame_size
         self.alpha = alpha
 
